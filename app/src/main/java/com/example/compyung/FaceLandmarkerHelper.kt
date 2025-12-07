@@ -30,8 +30,8 @@ class FaceLandmarkerHelper(
 
         val optionsBuilder = FaceLandmarker.FaceLandmarkerOptions.builder()
             .setBaseOptions(baseOptionsBuilder.build())
-            .setMinFaceDetectionConfidence(0.5f)
-            .setMinFacePresenceConfidence(0.5f)
+            .setMinFaceDetectionConfidence(0.3f) // 감도 상향 (기존 0.5 -> 0.3)
+            .setMinFacePresenceConfidence(0.3f) // 감도 상향 (기존 0.5 -> 0.3)
             .setRunningMode(RunningMode.LIVE_STREAM)
             .setResultListener(this::returnLivestreamResult)
             .setErrorListener(this::returnLivestreamError)

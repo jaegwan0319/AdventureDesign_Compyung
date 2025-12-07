@@ -80,7 +80,7 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         // 2. 기기 연결 (앱 내 연결) - 새로 추가됨
-        MenuCard(title = "기기 연결 (HC-05)") {
+        MenuCard(title = "기기 연결 (HC-06)") {
             // 권한 체크 및 요청 -> 다이얼로그
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 bluetoothPermissionLauncher.launch(

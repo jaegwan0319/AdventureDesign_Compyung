@@ -78,6 +78,13 @@ fun CameraContent(bluetoothClient: BluetoothClient) {
 
     // 추적 타겟 좌표 (0.0 ~ 1.0 정규화 좌표)
     var targetHandCenter by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    
+    // [Smoothing] 이전 좌표 저장용 변수
+    var prevX by remember { mutableFloatStateOf(-1f) }
+    var prevY by remember { mutableFloatStateOf(-1f) }
+    var prevZ by remember { mutableFloatStateOf(-1f) }
+    val smoothingFactor = 0.8f // 반응성을 높이기 위해 상향 (기존 0.5 -> 0.8)
+
     var lastSendTime by remember { mutableLongStateOf(0L) }
     var statusText by remember { mutableStateOf("화면을 터치하여 손을 선택하세요") }
 
@@ -88,7 +95,7 @@ fun CameraContent(bluetoothClient: BluetoothClient) {
         // 0.1초(100ms)마다 실행
         if (currentTime - lastSendTime >= 100) {
             val result = handLandmarkerResult
-            var message = "-1,-1\n" // 기본값 (감지 안됨)
+            var message = "-1,-1,-1\n" // 기본값 (감지 안됨)
 
             if (result != null && result.landmarks().isNotEmpty()) {
                 val hands = result.landmarks()
@@ -96,18 +103,26 @@ fun CameraContent(bluetoothClient: BluetoothClient) {
                 // [수정] 타겟이 없으면 첫 번째 손을 자동으로 타겟으로 설정
                 if (targetHandCenter == null) {
                     val firstHand = hands[0]
-                    val center = firstHand[9]
-                    targetHandCenter = Pair(center.x(), center.y())
+                    // 5번(검지 뿌리)과 13번(약지 뿌리)의 중간값을 중심으로 사용 (안정성 향상)
+                    val indexMcp = firstHand[5]
+                    val ringMcp = firstHand[13]
+                    val centerX = (indexMcp.x() + ringMcp.x()) / 2
+                    val centerY = (indexMcp.y() + ringMcp.y()) / 2
+                    targetHandCenter = Pair(centerX, centerY)
                 }
                 
                 // 타겟 추적 로직
                 var minDistance = Float.MAX_VALUE
                 var closestHandCenter: Pair<Float, Float>? = null
+                // Z값 (거리) 추정을 위한 변수 (손목~중지 길이 이용)
+                var closestHandDepth = 0f 
                 
                 for (hand in hands) {
-                    val center = hand[9]
-                    val cx = center.x()
-                    val cy = center.y()
+                    // 5번(검지 뿌리)과 13번(약지 뿌리)의 중간값을 중심으로 사용
+                    val indexMcp = hand[5]
+                    val ringMcp = hand[13]
+                    val cx = (indexMcp.x() + ringMcp.x()) / 2
+                    val cy = (indexMcp.y() + ringMcp.y()) / 2
                     
                     val dx = cx - targetHandCenter!!.first
                     val dy = cy - targetHandCenter!!.second
@@ -116,6 +131,16 @@ fun CameraContent(bluetoothClient: BluetoothClient) {
                     if (dist < minDistance) {
                         minDistance = dist
                         closestHandCenter = Pair(cx, cy)
+                        
+                        // Z값 계산: 손목(0)과 중지 끝(12) 사이의 거리로 추정
+                        // 가까울수록(크게 보일수록) 값이 커짐
+                        val wrist = hand[0]
+                        val middleTip = hand[12]
+                        val sizeDist = kotlin.math.sqrt(
+                            (wrist.x() - middleTip.x()) * (wrist.x() - middleTip.x()) + 
+                            (wrist.y() - middleTip.y()) * (wrist.y() - middleTip.y())
+                        )
+                        closestHandDepth = sizeDist
                     }
                 }
                 
@@ -131,20 +156,67 @@ fun CameraContent(bluetoothClient: BluetoothClient) {
                             viewSize.width, viewSize.height
                         )
                         
-                        val percentX = (screenX / viewSize.width * 100).toInt().coerceIn(0, 100)
-                        val percentY = (screenY / viewSize.height * 100).toInt().coerceIn(0, 100)
+                        // X, Y: 0~1000 범위로 변환
+                        var rawX = (screenX / viewSize.width * 1000).toFloat()
+                        var rawY = (screenY / viewSize.height * 1000).toFloat()
                         
-                        message = "$percentX,$percentY\n"
-                        statusText = "추적 중: $percentX, $percentY"
+                        // Z: 0~1000 범위로 변환
+                        var rawZ = (closestHandDepth * 2000).toFloat()
+
+                        // [Deadband] 미세 떨림 방지 (임계값: 10.0f)
+                        val deadband = 10.0f
+                        var shouldUpdate = false
+
+                        if (prevX == -1f) {
+                            shouldUpdate = true
+                        } else {
+                            val deltaX = kotlin.math.abs(rawX - prevX)
+                            val deltaY = kotlin.math.abs(rawY - prevY)
+                            val deltaZ = kotlin.math.abs(rawZ - prevZ)
+                            
+                            // 변화량이 임계값보다 클 때만 업데이트
+                            if (deltaX > deadband || deltaY > deadband || deltaZ > deadband) {
+                                shouldUpdate = true
+                            }
+                        }
+
+                        if (shouldUpdate) {
+                            // [Smoothing] 지수 이동 평균(EMA) 필터 적용
+                            if (prevX == -1f) {
+                                prevX = rawX
+                                prevY = rawY
+                                prevZ = rawZ
+                            } else {
+                                prevX = prevX * smoothingFactor + rawX * (1 - smoothingFactor)
+                                prevY = prevY * smoothingFactor + rawY * (1 - smoothingFactor)
+                                prevZ = prevZ * smoothingFactor + rawZ * (1 - smoothingFactor)
+                            }
+                        }
+                        // else: 변화량이 적으면 이전 값(prevX, prevY, prevZ)을 그대로 유지
+
+                        val finalX = prevX.toInt().coerceIn(0, 1000)
+                        val finalY = prevY.toInt().coerceIn(0, 1000)
+                        val finalZ = prevZ.toInt().coerceIn(0, 1000)
+                        
+                        message = "$finalX,$finalY,$finalZ\n"
+                        statusText = "추적 중: $finalX, $finalY, Z:$finalZ"
                     }
                 } else {
                     // 놓쳤으면 타겟 초기화 (다음 프레임에 자동으로 첫 번째 손 잡음)
                     statusText = "대상 놓침 -> 재탐색"
                     targetHandCenter = null
+                    // 스무딩 초기화
+                    prevX = -1f
+                    prevY = -1f
+                    prevZ = -1f
                 }
             } else {
                 statusText = "감지 안됨"
                 targetHandCenter = null
+                // 스무딩 초기화
+                prevX = -1f
+                prevY = -1f
+                prevZ = -1f
             }
 
             // 블루투스 전송
@@ -191,9 +263,11 @@ fun CameraContent(bluetoothClient: BluetoothClient) {
                         var selectedHandCenter: Pair<Float, Float>? = null
                         
                         for (hand in result.landmarks()) {
-                            val center = hand[9] // 손 중심
-                            val cx = center.x()
-                            val cy = center.y()
+                            // 5번(검지 뿌리)과 13번(약지 뿌리)의 중간값을 중심으로 사용
+                            val indexMcp = hand[5]
+                            val ringMcp = hand[13]
+                            val cx = (indexMcp.x() + ringMcp.x()) / 2
+                            val cy = (indexMcp.y() + ringMcp.y()) / 2
                             
                             // 화면 좌표로 변환하여 거리 계산
                             val (screenX, screenY) = transformCoordinate(

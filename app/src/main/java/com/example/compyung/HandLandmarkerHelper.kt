@@ -30,8 +30,8 @@ class HandLandmarkerHelper(
 
         val optionsBuilder = HandLandmarker.HandLandmarkerOptions.builder()
             .setBaseOptions(baseOptionsBuilder.build())
-            .setMinHandDetectionConfidence(0.5f)
-            .setMinTrackingConfidence(0.5f)
+            .setMinHandDetectionConfidence(0.3f) // 감도 상향 (기존 0.5 -> 0.3)
+            .setMinTrackingConfidence(0.3f) // 추적 유지력 상향 (기존 0.5 -> 0.3)
             .setRunningMode(RunningMode.LIVE_STREAM)
             .setResultListener(this::returnLivestreamResult)
             .setErrorListener(this::returnLivestreamError)

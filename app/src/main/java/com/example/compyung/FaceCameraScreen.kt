@@ -95,84 +95,100 @@ fun FaceCameraContent(bluetoothClient: BluetoothClient) {
         })
     }
     
-    // 트래킹 및 전송 로직
+        // 트래킹 및 전송 로직
     LaunchedEffect(faceLandmarkerResult, viewSize) {
-        faceLandmarkerResult?.let { result ->
-            val faces = result.faceLandmarks()
-            if (faces.isEmpty()) {
-                statusText = "얼굴 감지 안됨"
-                return@let
-            }
-
-            // 1. 타겟이 이미 설정되어 있다면 -> 가장 가까운 얼굴 찾아서 갱신 (Tracking)
-            // [수정] 타겟이 없으면 첫 번째 얼굴을 자동으로 타겟으로 설정
-            if (targetFaceCenter == null) {
-                val firstFace = faces[0]
-                val nose = firstFace[1]
-                targetFaceCenter = Pair(nose.x(), nose.y())
-            }
-
-            if (targetFaceCenter != null) {
-                var minDistance = Float.MAX_VALUE
-                var closestFaceCenter: Pair<Float, Float>? = null
-                
-                // 현재 프레임의 모든 얼굴 중, 이전 타겟 위치와 가장 가까운 놈 찾기
-                for (face in faces) {
-                    // 얼굴 중심 (코 끝: 인덱스 1)
-                    val nose = face[1]
-                    val cx = nose.x()
-                    val cy = nose.y()
-                    
-                    val dx = cx - targetFaceCenter!!.first
-                    val dy = cy - targetFaceCenter!!.second
-                    val dist = dx*dx + dy*dy 
-                    
-                    if (dist < minDistance) {
-                        minDistance = dist
-                        closestFaceCenter = Pair(cx, cy)
+        val currentTime = System.currentTimeMillis()
+        
+        // 0.1초마다 실행
+        if (currentTime - lastSendTime >= 100) {
+            var message = "-1,-1,-1\n" // 기본값 (감지 안됨)
+            
+            faceLandmarkerResult?.let { result ->
+                val faces = result.faceLandmarks()
+                if (faces.isNotEmpty()) {
+                    // 1. 타겟이 이미 설정되어 있다면 -> 가장 가까운 얼굴 찾아서 갱신 (Tracking)
+                    // [수정] 타겟이 없으면 첫 번째 얼굴을 자동으로 타겟으로 설정
+                    if (targetFaceCenter == null) {
+                        val firstFace = faces[0]
+                        val nose = firstFace[1]
+                        targetFaceCenter = Pair(nose.x(), nose.y())
                     }
-                }
-                
-                // 일정 거리 이내라면 추적 계속
-                if (minDistance < 0.2f && closestFaceCenter != null) { 
-                    targetFaceCenter = closestFaceCenter // 타겟 위치 갱신
-                    
-                    // 좌표 전송 (0.1초 주기)
-                    val currentTime = System.currentTimeMillis()
-                    if (currentTime - lastSendTime >= 100) {
-                        // 좌표 변환 적용 (뷰 크기가 유효할 때만)
-                        var percentX = -1
-                        var percentY = -1
+
+                    if (targetFaceCenter != null) {
+                        var minDistance = Float.MAX_VALUE
+                        var closestFaceCenter: Pair<Float, Float>? = null
+                        var bestZ = 0f
                         
-                        if (viewSize.width > 0 && viewSize.height > 0) {
-                            val (screenX, screenY) = transformCoordinate(
-                                targetFaceCenter!!.first, targetFaceCenter!!.second,
-                                imageSize.width, imageSize.height,
-                                viewSize.width, viewSize.height
-                            )
-                            percentX = (screenX / viewSize.width * 100).toInt().coerceIn(0, 100)
-                            percentY = (screenY / viewSize.height * 100).toInt().coerceIn(0, 100)
+                        // 현재 프레임의 모든 얼굴 중, 이전 타겟 위치와 가장 가까운 놈 찾기
+                        for (face in faces) {
+                            // 얼굴 중심 (코 끝: 인덱스 1)
+                            val nose = face[1]
+                            val cx = nose.x()
+                            val cy = nose.y()
+                            
+                            val dx = cx - targetFaceCenter!!.first
+                            val dy = cy - targetFaceCenter!!.second
+                            val dist = dx*dx + dy*dy 
+                            
+                            if (dist < minDistance) {
+                                minDistance = dist
+                                closestFaceCenter = Pair(cx, cy)
+                                
+                                // Z값 계산 (눈 사이 거리)
+                                val leftEye = face[33]
+                                val rightEye = face[263]
+                                val distEye = kotlin.math.sqrt(
+                                    (leftEye.x() - rightEye.x()) * (leftEye.x() - rightEye.x()) + 
+                                    (leftEye.y() - rightEye.y()) * (leftEye.y() - rightEye.y())
+                                )
+                                bestZ = distEye
+                            }
+                        }
+                        
+                        // 일정 거리 이내라면 추적 계속
+                        if (minDistance < 0.2f && closestFaceCenter != null) { 
+                            targetFaceCenter = closestFaceCenter // 타겟 위치 갱신
+                            
+                            // 좌표 변환 적용 (뷰 크기가 유효할 때만)
+                            var percentX = -1
+                            var percentY = -1
+                            var zScore = (bestZ * 3000).toInt().coerceIn(0, 1000)
+                            
+                            if (viewSize.width > 0 && viewSize.height > 0) {
+                                val (screenX, screenY) = transformCoordinate(
+                                    targetFaceCenter!!.first, targetFaceCenter!!.second,
+                                    imageSize.width, imageSize.height,
+                                    viewSize.width, viewSize.height
+                                )
+                                percentX = (screenX / viewSize.width * 1000).toInt().coerceIn(0, 1000)
+                                percentY = (screenY / viewSize.height * 1000).toInt().coerceIn(0, 1000)
+                            } else {
+                                // 뷰 사이즈가 아직 없으면 기존 방식(정확하진 않음) 유지하거나 대기
+                                percentX = (targetFaceCenter!!.first * 1000).toInt().coerceIn(0, 1000)
+                                percentY = (targetFaceCenter!!.second * 1000).toInt().coerceIn(0, 1000)
+                            }
+                            
+                            message = "$percentX,$percentY,$zScore\n"
+                            statusText = "추적 중: $percentX, $percentY, Z:$zScore"
                         } else {
-                            // 뷰 사이즈가 아직 없으면 기존 방식(정확하진 않음) 유지하거나 대기
-                            percentX = (targetFaceCenter!!.first * 100).toInt().coerceIn(0, 100)
-                            percentY = (targetFaceCenter!!.second * 100).toInt().coerceIn(0, 100)
+                            // 놓쳤으면 타겟 초기화 (다음 프레임에 자동으로 첫 번째 얼굴 잡음)
+                            statusText = "추적 대상 놓침 -> 재탐색"
+                            targetFaceCenter = null
                         }
-                        
-                        val message = "$percentX,$percentY\n"
-                        if (bluetoothClient.isConnected()) {
-                            bluetoothClient.sendData(message)
-                            lastSendTime = currentTime
-                            Log.d("FaceTracker", "Sent: $message")
-                        }
-                        statusText = "추적 중: $percentX, $percentY"
-                    }
+                    } 
                 } else {
-                    // 놓쳤으면 타겟 초기화 (다음 프레임에 자동으로 첫 번째 얼굴 잡음)
-                    statusText = "추적 대상 놓침 -> 재탐색"
+                    statusText = "얼굴 감지 안됨"
                     targetFaceCenter = null
                 }
-            } else {
+            } ?: run {
                 statusText = "얼굴 감지 안됨"
+                targetFaceCenter = null
+            }
+
+            if (bluetoothClient.isConnected()) {
+                bluetoothClient.sendData(message)
+                lastSendTime = currentTime
+                Log.d("FaceTracker", "Sent: $message")
             }
         }
     }
